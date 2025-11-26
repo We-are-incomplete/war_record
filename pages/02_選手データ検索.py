@@ -216,12 +216,15 @@ def main():
     
     with tab1:
         st.subheader("統合データ（選手情報 + 戦績）")
-        display_and_filter_data(merged_df, "merged")
+        if not player_df.empty:
+            display_and_filter_data(merged_df, "merged", player_df)
+        else:
+            display_and_filter_data(merged_df, "merged")
     
     with tab2:
         st.subheader("選手一覧")
         if not player_df.empty:
-            display_and_filter_data(player_df, "player")
+            display_and_filter_data(player_df, "player", player_df)
         else:
             st.info("選手一覧データがありません")
     
@@ -271,29 +274,45 @@ def display_and_filter_data(df, data_type, player_df=None):
         )
         
         if search_term:
-            # 戦績データの場合、選手名と通称の両方でマッチング
-            if data_type == "record" and player_df is not None and "選手名" in df.columns:
-                # 選手名で直接マッチ
-                mask_direct = df["選手名"].astype(str).str.contains(search_term, case=False, na=False)
+            # 選手名検索時に通称の記録も含める
+            if player_df is not None and "選手名" in df.columns and "通称" in player_df.columns:
+                # 1. 検索キーワードに一致する選手名を取得
+                matching_players = player_df[
+                    player_df["選手名"].astype(str).str.contains(search_term, case=False, na=False)
+                ]
                 
-                # 通称でマッチする選手名を取得
-                if "通称" in player_df.columns:
-                    matched_nicknames = player_df[
-                        player_df["通称"].astype(str).str.contains(search_term, case=False, na=False)
-                    ]["選手名"].tolist()
-                    mask_nickname = df["選手名"].isin(matched_nicknames)
-                    mask = mask_direct | mask_nickname
+                # 2. その選手の通称も取得
+                if not matching_players.empty:
+                    player_names = matching_players["選手名"].tolist()
+                    nicknames = matching_players["通称"].dropna().astype(str).tolist()
+                    # 選手名と通称の両方で戦績を検索
+                    all_names = list(set(player_names + nicknames))
+                    mask_player = df["選手名"].isin(all_names)
                 else:
-                    mask = mask_direct
+                    mask_player = pd.Series([False] * len(df))
                 
-                # その他の列でも検索
+                # 3. 通称で検索した場合、その通称を持つ選手の名前も取得
+                matching_nicknames = player_df[
+                    player_df["通称"].astype(str).str.contains(search_term, case=False, na=False)
+                ]
+                if not matching_nicknames.empty:
+                    player_names_from_nickname = matching_nicknames["選手名"].tolist()
+                    nicknames_from_search = matching_nicknames["通称"].dropna().astype(str).tolist()
+                    all_names_from_nickname = list(set(player_names_from_nickname + nicknames_from_search))
+                    mask_nickname = df["選手名"].isin(all_names_from_nickname)
+                else:
+                    mask_nickname = pd.Series([False] * len(df))
+                
+                # 4. その他の列でも検索（大会名、デッキなど）
                 mask_other = df.apply(
                     lambda row: row.astype(str).str.contains(search_term, case=False, na=False).any(),
                     axis=1
                 )
-                filtered_df = df[mask | mask_other]
+                
+                # すべてのマッチを統合
+                filtered_df = df[mask_player | mask_nickname | mask_other]
             else:
-                # 各列を文字列に変換して検索
+                # player_dfがない場合は通常の検索
                 mask = df.apply(
                     lambda row: row.astype(str).str.contains(search_term, case=False, na=False).any(),
                     axis=1
