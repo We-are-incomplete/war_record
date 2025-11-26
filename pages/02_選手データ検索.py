@@ -166,13 +166,43 @@ def main():
     
     # データの統合（選手情報と戦績を結合）
     if not player_df.empty and not record_df.empty:
-        # 選手名で結合
+        # 選手名と通称の両方で戦績をマッチング
+        # 1. 選手名での結合
         merged_df = pd.merge(
             record_df,
             player_df,
             on="選手名",
             how="left"
         )
+        
+        # 2. 通称でもマッチング（選手名が一致しなかった行を通称で再マッチ）
+        if "通称" in player_df.columns:
+            # まだマッチしていない戦績（TwitterIDが空の行）を抽出
+            unmatched_mask = merged_df["TwitterID"].isna() if "TwitterID" in merged_df.columns else pd.Series([True] * len(merged_df))
+            unmatched_records = record_df[unmatched_mask.values].copy()
+            
+            if not unmatched_records.empty:
+                # 通称で再マッチング
+                nickname_match = pd.merge(
+                    unmatched_records,
+                    player_df,
+                    left_on="選手名",
+                    right_on="通称",
+                    how="left",
+                    suffixes=('', '_from_nickname')
+                )
+                
+                # マッチした行で元のmerged_dfを更新
+                for idx, row in nickname_match.iterrows():
+                    if pd.notna(row.get("選手名_from_nickname")):
+                        # 元のインデックスを取得
+                        original_idx = unmatched_records.index[unmatched_records["選手名"] == row["選手名"]].tolist()
+                        if original_idx:
+                            # 選手情報を更新
+                            for col in ["TwitterID", "所属チーム", "通称"]:
+                                if col in nickname_match.columns and col in merged_df.columns:
+                                    merged_df.loc[original_idx[0], col] = row.get(col, row.get(f"{col}_from_nickname"))
+        
         st.success(f"✅ 選手: {len(player_df)} 件、戦績: {len(record_df)} 件のデータを読み込みました")
     elif not player_df.empty:
         merged_df = player_df
@@ -198,12 +228,22 @@ def main():
     with tab3:
         st.subheader("戦績一覧")
         if not record_df.empty:
-            display_and_filter_data(record_df, "record")
+            # 戦績一覧では選手情報も含めたデータを表示
+            if not player_df.empty:
+                display_and_filter_data(merged_df, "record", player_df)
+            else:
+                display_and_filter_data(record_df, "record")
         else:
             st.info("戦績データがありません")
 
-def display_and_filter_data(df, data_type):
-    """データを表示・フィルタリングする共通関数"""
+def display_and_filter_data(df, data_type, player_df=None):
+    """データを表示・フィルタリングする共通関数
+    
+    Args:
+        df: 表示するデータフレーム
+        data_type: データタイプ（merged, player, record）
+        player_df: 選手一覧データフレーム（戦績フィルタリング用）
+    """
     if df.empty:
         st.info("データがありません")
         return
@@ -231,12 +271,34 @@ def display_and_filter_data(df, data_type):
         )
         
         if search_term:
-            # 各列を文字列に変換して検索
-            mask = df.apply(
-                lambda row: row.astype(str).str.contains(search_term, case=False, na=False).any(),
-                axis=1
-            )
-            filtered_df = df[mask]
+            # 戦績データの場合、選手名と通称の両方でマッチング
+            if data_type == "record" and player_df is not None and "選手名" in df.columns:
+                # 選手名で直接マッチ
+                mask_direct = df["選手名"].astype(str).str.contains(search_term, case=False, na=False)
+                
+                # 通称でマッチする選手名を取得
+                if "通称" in player_df.columns:
+                    matched_nicknames = player_df[
+                        player_df["通称"].astype(str).str.contains(search_term, case=False, na=False)
+                    ]["選手名"].tolist()
+                    mask_nickname = df["選手名"].isin(matched_nicknames)
+                    mask = mask_direct | mask_nickname
+                else:
+                    mask = mask_direct
+                
+                # その他の列でも検索
+                mask_other = df.apply(
+                    lambda row: row.astype(str).str.contains(search_term, case=False, na=False).any(),
+                    axis=1
+                )
+                filtered_df = df[mask | mask_other]
+            else:
+                # 各列を文字列に変換して検索
+                mask = df.apply(
+                    lambda row: row.astype(str).str.contains(search_term, case=False, na=False).any(),
+                    axis=1
+                )
+                filtered_df = df[mask]
     
     else:  # 列ごとに絞り込み
         st.sidebar.subheader("列ごとの絞り込み")
