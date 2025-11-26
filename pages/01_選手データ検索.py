@@ -59,9 +59,8 @@ def get_gspread_client():
         st.error(f"Google Sheetsへの接続に失敗しました: {e}")
         return None
 
-@st.cache_data(ttl=300)  # 5分間キャッシュ
 def load_data_from_sheet(spreadsheet_id, worksheet_name, expected_columns=None):
-    """スプレッドシートからデータを読み込み"""
+    """スプレッドシートからデータを読み込み（キャッシュなし - 毎回最新データを取得）"""
     if not spreadsheet_id:
         return pd.DataFrame()
     
@@ -93,10 +92,23 @@ def load_data_from_sheet(spreadsheet_id, worksheet_name, expected_columns=None):
                     df.columns = expected_columns + list(df.columns[len(expected_columns):])
         
         return df
+    except PermissionError:
+        st.error(f"🚫 シート「{worksheet_name}」へのアクセス権限がありません")
+        st.warning("""
+        **解決方法:**
+        1. Google Sheetsを開く
+        2. 右上の「共有」ボタンをクリック
+        3. サービスアカウントのメールアドレスを追加
+        4. 「編集者」または「閲覧者」権限を付与
+        
+        **サービスアカウントのメールアドレスは Secrets の `client_email` を確認してください**
+        """)
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"シート「{worksheet_name}」のデータ読み込みに失敗しました: {e}")
-        import traceback
-        st.error(f"詳細: {traceback.format_exc()}")
+        with st.expander("詳細を表示"):
+            import traceback
+            st.code(traceback.format_exc())
         return pd.DataFrame()
 
 # --- メイン画面 ---

@@ -1,62 +1,33 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import io
 import gspread
 from google.oauth2.service_account import Credentials
 from gspread_dataframe import get_as_dataframe
 from streamlit.errors import StreamlitAPIException
-from streamlit_cookies_manager import EncryptedCookieManager
 
-st.set_page_config(layout="wide")
+st.set_page_config(layout="wide", page_title="戦績閲覧", page_icon="📊")
 
 # --- 定数定義 ---
 SPREADSHEET_NAME_DISPLAY = "Waic-戦績"
-# スプレッドシートIDをSecretsから取得（ローカル開発時のフォールバック付き）
 if hasattr(st, 'secrets') and "spreadsheet_ids" in st.secrets and "war_record" in st.secrets["spreadsheet_ids"]:
     SPREADSHEET_ID = st.secrets["spreadsheet_ids"]["war_record"]
 else:
-    # ローカル開発時のデフォルト値
     SPREADSHEET_ID = "1V9guZQbpV8UDU_W2pC1WBsE1hOHqIO4yTsG8oGzaPQU"
     st.warning("⚠️ スプレッドシートIDがSecretsに設定されていません。デフォルト値を使用します。")
 WORKSHEET_NAME = "シート1"
-COLUMNS = [ 'season', 'date', 'environment', 
-'my_deck', 'my_deck_type', 'opponent_deck', 'opponent_deck_type', 'first_second', 'result', 'finish_turn', 'memo' ]
-NEW_ENTRY_LABEL = "（新しい値を入力）"
-SELECT_PLACEHOLDER = "--- 選択してください ---" # 分析用
-ALL_TYPES_PLACEHOLDER = "全タイプ" # 分析用
-
-# --- パスワード認証のための設定 ---
-def get_app_password():
-    if hasattr(st, 'secrets') and "app_credentials" in st.secrets and "password" in st.secrets["app_credentials"]:
-        return st.secrets["app_credentials"]["password"]
-    else:
-        st.warning("アプリケーションパスワードがSecretsに設定されていません。ローカルテスト用に 'test_password' を使用します。デプロイ時には必ずSecretsを設定してください。")
-        return "test_password" 
-CORRECT_PASSWORD = get_app_password()
-
-# ★追加：クッキーマネージャを初期化
-# 暗号化キーは st.secrets から取得することを強く推奨します。
-# キー名は任意ですが、ここでは "cookie_encryption_key" としています。
-# Streamlit Cloud の場合、Secretsに COOKIE_ENCRYPTION_KEY = "あなた自身の強力な秘密のキー" のように設定してください。
-cookie_encryption_key = st.secrets.get("app_credentials", {}).get("cookie_encryption_key", "YOUR_FALLBACK_DEFAULT_KEY_12345")
-if cookie_encryption_key == "YOUR_FALLBACK_DEFAULT_KEY_12345":
-    st.warning("クッキー暗号化キーがデフォルトのままです。Secretsに 'cookie_encryption_key' を設定してください。")
-
-cookies = EncryptedCookieManager(
-    password=cookie_encryption_key,
-    # クッキーのプレフィックスやパスは必要に応じて設定できます
-    # prefix="streamlit_auth_",
-    # path="/",
-)
-if not cookies.ready(): # クッキーがロードされるまで待機 (通常は不要ですが、念のため)
-    st.stop()
+COLUMNS = ['season', 'date', 'environment', 
+'my_deck', 'my_deck_type', 'opponent_deck', 'opponent_deck_type', 'first_second', 'result', 'finish_turn', 'memo']
+SELECT_PLACEHOLDER = "--- 選択してください ---"
+ALL_TYPES_PLACEHOLDER = "全タイプ"
 
 # --- Google Sheets 連携 ---
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/drive.file'
 ]
+
+@st.cache_resource
 def get_gspread_client():
     creds = None
     use_streamlit_secrets = False
@@ -82,8 +53,9 @@ def get_gspread_client():
         st.error(f"Google Sheetsへの接続に失敗しました: {e}")
         return None
 
-# --- データ操作関数 ---
+# --- データ読み込み ---
 def load_data(spreadsheet_id, worksheet_name):
+    """スプレッドシートからデータを読み込み（キャッシュなし - 毎回最新データを取得）"""
     client = get_gspread_client()
     if client is None:
         st.error("Google Sheetsに接続できなかったため、データを読み込めません。認証情報を確認してください。")
@@ -102,16 +74,14 @@ def load_data(spreadsheet_id, worksheet_name):
             df = pd.DataFrame(columns=header_row)
             expected_header = COLUMNS
             actual_header_subset = list(df.columns)[:len(expected_header)]
-            # 列名が完全に一致するか、またはCOLUMNSの列がすべて含まれるかチェック
             if not (actual_header_subset == expected_header or list(df.columns) == expected_header or set(COLUMNS).issubset(set(df.columns))):
                  st.warning(f"スプレッドシートのヘッダーが期待と異なります。\n期待(一部): {expected_header}\n実際(一部): {actual_header_subset}")
 
-        # COLUMNS に基づいて DataFrame を整形し、不足列は適切な型で追加
-        temp_df = pd.DataFrame(columns=COLUMNS) # 期待する列構成で初期化
+        temp_df = pd.DataFrame(columns=COLUMNS)
         for col in COLUMNS:
             if col in df.columns:
                 temp_df[col] = df[col]
-            else: # dfに列が存在しない場合は、空のSeriesを適切な型で作成
+            else:
                 if col == 'date': temp_df[col] = pd.Series(dtype='datetime64[ns]')
                 elif col == 'finish_turn': temp_df[col] = pd.Series(dtype='Int64')
                 else: temp_df[col] = pd.Series(dtype='object')
@@ -123,14 +93,14 @@ def load_data(spreadsheet_id, worksheet_name):
             df['finish_turn'] = pd.to_numeric(df['finish_turn'], errors='coerce').astype('Int64')
         
         string_cols = ['my_deck_type', 'opponent_deck_type', 'my_deck', 'opponent_deck', 
-                       'season', 'memo', 'first_second', 'result', 'environment'] # formatを削除
-        for col in string_cols: # dfに実際に列が存在するか確認してから処理
+                       'season', 'memo', 'first_second', 'result', 'environment']
+        for col in string_cols:
             if col in df.columns:
                 df[col] = df[col].astype(str).fillna('')
-            else: # 通常は上の処理で列が作られているはず
-                df[col] = pd.Series(dtype='str').fillna('') #念のため
+            else:
+                df[col] = pd.Series(dtype='str').fillna('')
         
-        df = df.reindex(columns=COLUMNS) # 最終的にCOLUMNSの順序と列構成を保証
+        df = df.reindex(columns=COLUMNS)
 
     except gspread.exceptions.SpreadsheetNotFound:
         st.error(f"スプレッドシート (ID: {spreadsheet_id}) が見つからないか、アクセス権がありません。共有設定を確認してください。")
@@ -143,111 +113,27 @@ def load_data(spreadsheet_id, worksheet_name):
         df = pd.DataFrame(columns=COLUMNS)
     return df
 
-def save_data(df_one_row, spreadsheet_id, worksheet_name):
-    client = get_gspread_client()
-    if client is None:
-        st.error("Google Sheetsに接続できなかったため、データを保存できませんでした。")
-        return False
-    try:
-        spreadsheet = client.open_by_key(spreadsheet_id)
-        worksheet = spreadsheet.worksheet(worksheet_name)
-        current_headers = []
-        if worksheet.row_count > 0:
-            current_headers = worksheet.row_values(1)
-        if not current_headers or len(current_headers) < len(COLUMNS) or current_headers[:len(COLUMNS)] != COLUMNS :
-            worksheet.update('A1', [COLUMNS], value_input_option='USER_ENTERED')
-            if not current_headers: st.info("スプレッドシートにヘッダー行を書き込みました。")
-            else: st.warning("スプレッドシートのヘッダーを修正しました。")
-        data_to_append = []
-        for col in COLUMNS:
-            if col in df_one_row.columns:
-                value = df_one_row.iloc[0][col]
-                if pd.isna(value): data_to_append.append("") 
-                elif col == 'date' and isinstance(value, (datetime, pd.Timestamp)):
-                     data_to_append.append(value.strftime('%Y-%m-%d'))
-                elif col == 'finish_turn' and pd.notna(value): 
-                     data_to_append.append(int(value)) 
-                else: data_to_append.append(str(value))
-            else:
-                data_to_append.append("")
-        worksheet.append_row(data_to_append, value_input_option='USER_ENTERED')
-        return True
-    except Exception as e:
-        st.error(f"Google Sheetsへのデータ書き込み中にエラーが発生しました: {type(e).__name__}: {e}")
-        return False
+# --- 分析用ヘルパー関数 ---
+def get_all_analyzable_deck_names(df):
+    my_decks = df['my_deck'].astype(str).replace('', pd.NA).dropna().unique()
+    opponent_decks = df['opponent_deck'].astype(str).replace('', pd.NA).dropna().unique()
+    all_decks_set = set(my_decks) | set(opponent_decks)
+    return sorted([d for d in all_decks_set if d and d.lower() != 'nan'])
 
-# --- 入力フォーム用ヘルパー関数 (シーズン絞り込み対応) ---
-def get_unique_items_with_new_option(df, column_name, predefined_options=None):
-    items = []
-    if predefined_options is not None:
-        items = list(predefined_options) 
-    
-    if df is not None and not df.empty and column_name in df.columns and not df[column_name].empty:
-        valid_items_series = df[column_name].astype(str).replace('', pd.NA).dropna()
-        if not valid_items_series.empty:
-            unique_valid_items = sorted(valid_items_series.unique().tolist())
-            if predefined_options is not None:
-                items = sorted(list(set(items + unique_valid_items)))
-            else:
-                items = unique_valid_items
-    
-    final_options = []
-    if NEW_ENTRY_LABEL not in items:
-        final_options.append(NEW_ENTRY_LABEL)
-    final_options.extend([item for item in items if item != NEW_ENTRY_LABEL])
-    return final_options
-
-def get_decks_for_season_input(df, selected_season):
-    """入力フォーム用: 指定シーズンに登場する全デッキアーキタイプ名を取得"""
-    df_to_use = df.copy() # 元のdfを変更しないようにコピー
-    if selected_season and selected_season != NEW_ENTRY_LABEL and pd.notna(selected_season):
-        df_to_use = df_to_use[df_to_use['season'].astype(str) == str(selected_season)]
-    
-    if df_to_use.empty:
-        return [NEW_ENTRY_LABEL]
-        
-    deck_names_set = set()
-    for col_name in ['my_deck', 'opponent_deck']:
-        if col_name in df_to_use.columns and not df_to_use[col_name].empty:
-            valid_items = df_to_use[col_name].astype(str).replace('', pd.NA).dropna()
-            deck_names_set.update(d for d in valid_items.tolist() if d and d.lower() != 'nan') # nan文字列も除外
-            
-    if not deck_names_set:
-        return [NEW_ENTRY_LABEL]
-    return [NEW_ENTRY_LABEL] + sorted(list(deck_names_set))
-
-def get_types_for_deck_and_season_input(df, selected_season, selected_deck_name):
-    """入力フォーム用: 指定シーズン・指定デッキ名に関連する全ユニークな型を取得
-       (my_deck_type と opponent_deck_type の両方を参照)
-    """
-    if (not selected_deck_name or selected_deck_name == NEW_ENTRY_LABEL or pd.isna(selected_deck_name) or
-        not selected_season or selected_season == NEW_ENTRY_LABEL or pd.isna(selected_season)):
-        return [NEW_ENTRY_LABEL]
-
-    df_filtered = df[df['season'].astype(str) == str(selected_season)]
-    if df_filtered.empty:
-        return [NEW_ENTRY_LABEL]
-
+def get_all_types_for_archetype(df, deck_name):
+    if not deck_name or deck_name == SELECT_PLACEHOLDER or pd.isna(deck_name):
+        return [ALL_TYPES_PLACEHOLDER] 
     types = set()
-    s_deck_name_str = str(selected_deck_name)
-
-    # 選択されたデッキ名がmy_deckの場合のmy_deck_type
-    my_deck_matches = df_filtered[df_filtered['my_deck'].astype(str) == s_deck_name_str]
+    my_deck_matches = df[df['my_deck'].astype(str) == str(deck_name)]
     if not my_deck_matches.empty and 'my_deck_type' in my_deck_matches.columns:
-        valid_types = my_deck_matches['my_deck_type'].astype(str).replace('', pd.NA).dropna()
-        types.update(t for t in valid_types.tolist() if t and t.lower() != 'nan')
-
-    # 選択されたデッキ名がopponent_deckの場合のopponent_deck_type
-    opponent_deck_matches = df_filtered[df_filtered['opponent_deck'].astype(str) == s_deck_name_str]
+        types.update(my_deck_matches['my_deck_type'].astype(str).replace('', pd.NA).dropna().tolist())
+    opponent_deck_matches = df[df['opponent_deck'].astype(str) == str(deck_name)]
     if not opponent_deck_matches.empty and 'opponent_deck_type' in opponent_deck_matches.columns:
-        valid_types = opponent_deck_matches['opponent_deck_type'].astype(str).replace('', pd.NA).dropna()
-        types.update(t for t in valid_types.tolist() if t and t.lower() != 'nan')
-        
-    if not types:
-        return [NEW_ENTRY_LABEL]
-    return [NEW_ENTRY_LABEL] + sorted(list(types))
+        types.update(opponent_deck_matches['opponent_deck_type'].astype(str).replace('', pd.NA).dropna().tolist())
+    valid_types = sorted([t for t in list(types) if t and t.lower() != 'nan'])
+    return [ALL_TYPES_PLACEHOLDER] + valid_types
 
-# --- 分析機能は pages/02_戦績閲覧.py に移動しました ---
+def display_general_deck_performance(df_to_analyze):
     st.subheader("全デッキアーキタイプ パフォーマンス概要")
     all_deck_archetypes = get_all_analyzable_deck_names(df_to_analyze) 
     if not all_deck_archetypes:
@@ -355,7 +241,6 @@ def show_analysis_section(original_df):
 
     st.subheader("注目デッキ分析")
     def reset_focus_type_callback(): 
-        # セッション状態の直接操作を避け、削除のみ行う
         keys_to_reset = ['ana_focus_deck_type_selector', 'inp_ana_focus_deck_type_new']
         for key in keys_to_reset:
             if key in st.session_state:
@@ -539,238 +424,43 @@ def show_analysis_section(original_df):
                 df_memo_display['date'] = pd.to_datetime(df_memo_display['date'], errors='coerce').dt.strftime('%Y-%m-%d')
             st.dataframe(df_memo_display.sort_values(by='date', ascending=False), use_container_width=True)
         else: st.info(f"「{focus_deck_display_name}」に関するメモ付きの記録は、現在の絞り込み条件ではありません。")
-    else: # 注目デッキが選択されていない場合
-        display_general_deck_performance(df_for_analysis) # 新しい関数を呼び出し
-
-# --- Streamlit アプリ本体 (main関数) ---
-def main():
-    
-    st.title("カードゲーム戦績管理アプリ (" + SPREADSHEET_NAME_DISPLAY + ")")
-
-    if SPREADSHEET_ID == "ここに実際の Waic-戦績 のスプレッドシートIDを貼り付け":
-        st.error("コード内の SPREADSHEET_ID を、お使いのGoogleスプレッドシートの実際のIDに置き換えてください。")
-        st.warning("スプレッドシートIDは、スプレッドシートのURLに含まれる長い英数字の文字列です。")
-        st.code("https://docs.google.com/spreadsheets/d/【この部分がIDです】/edit")
-        st.stop()
-    
-    # --- ▼▼▼ 認証処理の変更 ▼▼▼ ---
-    if 'authenticated' not in st.session_state:
-        st.session_state.authenticated = False
-
-    # ★追加：アプリ起動時にクッキーを確認し、自動ログインを試みる
-    if not st.session_state.authenticated: # まだst.session_stateで認証されていなければ
-        try:
-            stored_password_from_cookie = cookies.get('auth_password') # クッキーから保存されたパスワードを取得
-            if stored_password_from_cookie and stored_password_from_cookie == CORRECT_PASSWORD:
-                st.session_state.authenticated = True
-                # 自動ログイン成功時は st.rerun() を呼ばない方がスムーズな場合がある
-                # st.rerun() # 必要に応じて呼び出す
-        except Exception as e:
-            # クッキーのデコードエラーやその他の問題が発生した場合のフォールバック
-            st.warning(f"クッキーの読み取り中にエラーが発生しました: {e}")
-            pass # ログインフォームに進む
-
-    if not st.session_state.authenticated:
-        st.title("アプリへのログイン")
-        login_col1, login_col2, login_col3 = st.columns([1,1,1])
-        with login_col2:
-            with st.form("login_form_main"):
-                st.markdown("#### パスワードを入力してください")
-                password_input = st.text_input("パスワード", type="password", key="password_input_field_main", label_visibility="collapsed")
-                login_button = st.form_submit_button("ログイン")
-                if login_button:
-                    if password_input == CORRECT_PASSWORD:
-                        st.session_state.authenticated = True
-                        # ★追加：ログイン成功時にパスワードをクッキーに保存
-                        cookies['auth_password'] = CORRECT_PASSWORD
-                        # クッキーの有効期限を設定（例: 365日）
-                        # cookies.set('auth_password', CORRECT_PASSWORD, expires_at=datetime.now() + timedelta(days=365))
-                        # ↑ timedelta を使う場合は from datetime import timedelta が必要
-                        # EncryptedCookieManager では set 時に expires_at を直接は指定できないようです。
-                        # CookieManager の save メソッドでグローバルな有効期限を設定するか、
-                        # ライブラリのドキュメントで詳細な有効期限設定方法を確認する必要があります。
-                        # ここでは、ライブラリのデフォルトの有効期限（またはブラウザセッション）に依存します。
-                        # より長期間の保持のためには、CookieManager の設定を調べるか、
-                        # 単純にキーが存在し、CORRECT_PASSWORDと一致するかどうかで判断します。
-                        # (EncryptedCookieManagerのデフォルトでは永続的なクッキーになることが多いです)
-                        cookies.save() # 変更をクッキーに保存
-                        st.rerun()
-                    else:
-                        st.error("パスワードが正しくありません。")
-        st.stop()
-    # --- ▲▲▲ 認証処理の変更ここまで ▲▲▲ ---
-
-    df = load_data(SPREADSHEET_ID, WORKSHEET_NAME)
-
-    # --- on_change コールバック関数の定義 (main関数内に移動) ---
-    def on_season_select_change_input_form(): # 名前を変更して分析セクションのコールバックと区別
-        keys_to_reset = [
-            'inp_my_deck', 'inp_my_deck_new', 
-            'inp_my_deck_type', 'inp_my_deck_type_new',
-            'inp_opponent_deck', 'inp_opponent_deck_new',
-            'inp_opponent_deck_type', 'inp_opponent_deck_type_new'
-        ]
-        for key in keys_to_reset:
-            if key.endswith("_new"):
-                if key in st.session_state: st.session_state[key] = ""
-            else:
-                if key in st.session_state: st.session_state[key] = NEW_ENTRY_LABEL
-    
-    def on_my_deck_select_change_input_form():
-        if 'inp_my_deck_type' in st.session_state: st.session_state.inp_my_deck_type = NEW_ENTRY_LABEL
-        if 'inp_my_deck_type_new' in st.session_state: st.session_state.inp_my_deck_type_new = ""
-
-    def on_opponent_deck_select_change_input_form():
-        if 'inp_opponent_deck_type' in st.session_state: st.session_state.inp_opponent_deck_type = NEW_ENTRY_LABEL
-        if 'inp_opponent_deck_type_new' in st.session_state: st.session_state.inp_opponent_deck_type_new = ""
-    # --- コールバック定義ここまで ---
-
-    with st.expander("戦績を入力する", expanded=True):
-        st.subheader("対戦情報")
-        # シーズン選択 (過去の入力からも選択できるように get_unique_items_with_new_option を使用)
-        season_options_input = get_unique_items_with_new_option(df, 'season')
-        st.selectbox("シーズン *", season_options_input, key='inp_season_select', 
-                     help="例: 2025年前期, 〇〇カップ", on_change=on_season_select_change_input_form) # on_change設定
-        if st.session_state.get('inp_season_select') == NEW_ENTRY_LABEL:
-            st.text_input("新しいシーズン名を入力 *", value=st.session_state.get('inp_season_new', ""), key='inp_season_new')
-        
-        default_dt_for_input = datetime.today().date()
-        inp_date_value = st.session_state.get('inp_date', default_dt_for_input)
-        if isinstance(inp_date_value, datetime): inp_date_value = inp_date_value.date()
-        elif not isinstance(inp_date_value, type(default_dt_for_input)):
-            try: inp_date_value = pd.to_datetime(inp_date_value).date()
-            except: inp_date_value = default_dt_for_input
-        st.date_input("対戦日", value=inp_date_value, key='inp_date') # 日付は保持
-        
-        predefined_environments = ["Waic内", "野良", "大会"]
-        unique_past_environments = []
-        if 'environment' in df.columns and not df.empty and not df['environment'].dropna().empty:
-            valid_items = df['environment'].astype(str).replace('', pd.NA).dropna()
-            if not valid_items.empty: unique_past_environments = sorted(valid_items.unique().tolist())
-        current_environments = list(set(predefined_environments + unique_past_environments))
-        environment_options_input = [NEW_ENTRY_LABEL] + sorted([opt for opt in current_environments if opt and opt != NEW_ENTRY_LABEL])
-        st.selectbox("対戦環境 *", environment_options_input, key='inp_environment_select')
-        if st.session_state.get('inp_environment_select') == NEW_ENTRY_LABEL:
-            st.text_input("新しい対戦環境を入力 *", value=st.session_state.get('inp_environment_new', ""), key='inp_environment_new')
-
-        current_selected_season_input = st.session_state.get('inp_season_select')
-        deck_name_options_input = get_decks_for_season_input(df, current_selected_season_input)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("自分のデッキ")
-            st.selectbox("使用デッキ *", deck_name_options_input, key='inp_my_deck', on_change=on_my_deck_select_change_input_form) # on_change設定
-            if st.session_state.get('inp_my_deck') == NEW_ENTRY_LABEL:
-                st.text_input("新しい使用デッキ名を入力 *", value=st.session_state.get('inp_my_deck_new', ""), key='inp_my_deck_new')
-            
-            current_my_deck_name_input = st.session_state.get('inp_my_deck')
-            my_deck_type_options_input = get_types_for_deck_and_season_input(df, current_selected_season_input, current_my_deck_name_input)
-            st.selectbox("使用デッキの型 *", my_deck_type_options_input, key='inp_my_deck_type')
-            if st.session_state.get('inp_my_deck_type') == NEW_ENTRY_LABEL:
-                st.text_input("新しい使用デッキの型を入力 *", value=st.session_state.get('inp_my_deck_type_new', ""), key='inp_my_deck_type_new')
-        
-        with col2:
-            st.subheader("対戦相手のデッキ")
-            st.selectbox("相手デッキ *", deck_name_options_input, key='inp_opponent_deck', on_change=on_opponent_deck_select_change_input_form) # on_change設定
-            if st.session_state.get('inp_opponent_deck') == NEW_ENTRY_LABEL:
-                st.text_input("新しい相手デッキ名を入力 *", value=st.session_state.get('inp_opponent_deck_new', ""), key='inp_opponent_deck_new')
-
-            current_opponent_deck_name_input = st.session_state.get('inp_opponent_deck')
-            opponent_deck_type_options_input = get_types_for_deck_and_season_input(df, current_selected_season_input, current_opponent_deck_name_input)
-            st.selectbox("相手デッキの型 *", opponent_deck_type_options_input, key='inp_opponent_deck_type')
-            if st.session_state.get('inp_opponent_deck_type') == NEW_ENTRY_LABEL:
-                st.text_input("新しい相手デッキの型を入力 *", value=st.session_state.get('inp_opponent_deck_type_new', ""), key='inp_opponent_deck_type_new')
-        
-        st.subheader("対戦結果")
-        res_col1, res_col2, res_col3 = st.columns(3)
-        with res_col1:
-            st.selectbox("自分の先攻/後攻 *", ["先攻", "後攻"], key='inp_first_second', index=0 if 'inp_first_second' not in st.session_state else ["先攻", "後攻"].index(st.session_state.inp_first_second))
-        with res_col2:
-            st.selectbox("勝敗 *", ["勝ち", "負け"], key='inp_result', index=0 if 'inp_result' not in st.session_state else ["勝ち", "負け"].index(st.session_state.inp_result))
-        with res_col3:
-            st.number_input("決着ターン *", min_value=1, step=1, value=st.session_state.get('inp_finish_turn', 3), placeholder="ターン数を入力", key='inp_finish_turn')
-        st.text_area("対戦メモ (任意)", value=st.session_state.get('inp_memo', ""), key='inp_memo')
-
-        st.markdown("---")
-        error_placeholder = st.empty()
-        success_placeholder = st.empty()
-
-        if st.button("戦績を記録", key='submit_record_button'):
-            final_season = st.session_state.get('inp_season_new', '') if st.session_state.get('inp_season_select') == NEW_ENTRY_LABEL else st.session_state.get('inp_season_select')
-            final_my_deck = st.session_state.get('inp_my_deck_new', '') if st.session_state.get('inp_my_deck') == NEW_ENTRY_LABEL else st.session_state.get('inp_my_deck')
-            final_my_deck_type = st.session_state.get('inp_my_deck_type_new', '') if st.session_state.get('inp_my_deck_type') == NEW_ENTRY_LABEL else st.session_state.get('inp_my_deck_type')
-            final_opponent_deck = st.session_state.get('inp_opponent_deck_new', '') if st.session_state.get('inp_opponent_deck') == NEW_ENTRY_LABEL else st.session_state.get('inp_opponent_deck')
-            final_opponent_deck_type = st.session_state.get('inp_opponent_deck_type_new', '') if st.session_state.get('inp_opponent_deck_type') == NEW_ENTRY_LABEL else st.session_state.get('inp_opponent_deck_type')
-            final_environment = st.session_state.get('inp_environment_new', '') if st.session_state.get('inp_environment_select') == NEW_ENTRY_LABEL else st.session_state.get('inp_environment_select')
-            if final_environment == NEW_ENTRY_LABEL : final_environment = ''
-            date_val_from_state = st.session_state.get('inp_date')
-            if isinstance(date_val_from_state, datetime): date_val = date_val_from_state.date()
-            elif isinstance(date_val_from_state, type(datetime.today().date())): date_val = date_val_from_state
-            else: 
-                try: date_val = pd.to_datetime(date_val_from_state).date()
-                except: date_val = datetime.today().date()
-            first_second_val = st.session_state.get('inp_first_second')
-            result_val = st.session_state.get('inp_result')
-            finish_turn_val = st.session_state.get('inp_finish_turn')
-            memo_val = st.session_state.get('inp_memo', '')
-            
-            error_messages = []
-            if not final_season or final_season == NEW_ENTRY_LABEL: error_messages.append("シーズンを入力または選択してください。")
-            if not final_my_deck or final_my_deck == NEW_ENTRY_LABEL: error_messages.append("使用デッキ名を入力または選択してください。")
-            if not final_my_deck_type or final_my_deck_type == NEW_ENTRY_LABEL: error_messages.append("使用デッキの型を入力または選択してください。")
-            if not final_opponent_deck or final_opponent_deck == NEW_ENTRY_LABEL: error_messages.append("相手デッキ名を入力または選択してください。")
-            if not final_opponent_deck_type or final_opponent_deck_type == NEW_ENTRY_LABEL: error_messages.append("相手デッキの型を入力または選択してください。")
-            if not final_environment or final_environment == NEW_ENTRY_LABEL: error_messages.append("対戦環境を選択または入力してください。")
-            if finish_turn_val is None: error_messages.append("決着ターンを入力してください。")
-
-
-            if error_messages:
-                error_placeholder.error("、".join(error_messages))
-                success_placeholder.empty()
-            else:
-                error_placeholder.empty()
-                new_record_data = {
-                    'season': final_season, 'date': pd.to_datetime(date_val),
-                    'environment': final_environment, 
-                    'my_deck': final_my_deck, 'my_deck_type': final_my_deck_type,
-                    'opponent_deck': final_opponent_deck, 'opponent_deck_type': final_opponent_deck_type,
-                    'first_second': first_second_val, 'result': result_val,
-                    'finish_turn': int(finish_turn_val) if finish_turn_val is not None else None,
-                    'memo': memo_val
-                }
-                new_df_row = pd.DataFrame([new_record_data], columns=COLUMNS)
-                if save_data(new_df_row, SPREADSHEET_ID, WORKSHEET_NAME):
-                    success_placeholder.success("戦績を記録しました！")
-                    # セッション状態の直接操作を避け、特定のキーのみクリア
-                    keys_to_clear = [
-                        'inp_memo',  # メモフィールドのみクリア
-                        # 他のフィールドは保持してユーザビリティを向上
-                    ]
-                    for key in keys_to_clear:
-                        if key in st.session_state:
-                            del st.session_state[key]
-                    
-                    st.rerun()
-                else:
-                    error_placeholder.error("データの保存に失敗しました。Google Sheetsへの接続を確認してください。")
-    
-    # 簡易統計表示
-    st.markdown("---")
-    st.subheader("📊 簡易統計")
-    if not df.empty:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("総対戦数", len(df))
-        with col2:
-            wins = len(df[df['result'] == '勝ち'])
-            st.metric("勝利数", wins)
-        with col3:
-            win_rate = (wins / len(df) * 100) if len(df) > 0 else 0
-            st.metric("勝率", f"{win_rate:.1f}%")
-        
-        st.info("📈 詳細な分析は「戦績閲覧」ページをご覧ください")
     else:
-        st.info("戦績データがまだありません。上記フォームから対戦結果を入力してください。")
+        display_general_deck_performance(df_for_analysis)
+
+# --- メイン処理 ---
+def main():
+    st.title(f"📊 {SPREADSHEET_NAME_DISPLAY} - 戦績閲覧")
+    
+    # データ読み込み
+    df = load_data(SPREADSHEET_ID, WORKSHEET_NAME)
+    
+    # 分析セクション
+    show_analysis_section(df.copy())
+    
+    # 戦績一覧
+    st.header("📋 戦績一覧")
+    if df.empty:
+        st.info("まだ戦績データがありません。")
+    else:
+        display_columns = ['date', 'season', 'environment', 'my_deck', 'my_deck_type', 'opponent_deck', 'opponent_deck_type', 'first_second', 'result', 'finish_turn', 'memo']
+        cols_to_display_actual = [col for col in display_columns if col in df.columns]
+        df_display = df.copy()
+        if 'date' in df_display.columns:
+            df_display['date'] = pd.to_datetime(df_display['date'], errors='coerce')
+            not_nat_dates = df_display.dropna(subset=['date'])
+            nat_dates = df_display[df_display['date'].isna()]
+            df_display_sorted = pd.concat([not_nat_dates.sort_values(by='date', ascending=False), nat_dates]).reset_index(drop=True)
+            if pd.api.types.is_datetime64_any_dtype(df_display_sorted['date']):
+                 df_display_sorted['date'] = df_display_sorted['date'].apply(
+                     lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else None)
+        else:
+            df_display_sorted = df_display.reset_index(drop=True)
+        st.dataframe(df_display_sorted[cols_to_display_actual], use_container_width=True)
+        csv_export = df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 戦績データをCSVでダウンロード", data=csv_export,
+            file_name='game_records_download.csv', mime='text/csv',
+        )
 
 if __name__ == '__main__':
     main()
