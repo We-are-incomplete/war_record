@@ -8,10 +8,20 @@ from streamlit.errors import StreamlitAPIException
 st.set_page_config(layout="wide", page_title="選手データ検索")
 
 # --- 定数定義 ---
-# 選手データ用のスプレッドシートIDを設定してください
-# 例: PLAYER_SPREADSHEET_ID = "1ABC...XYZ"
-PLAYER_SPREADSHEET_ID = ""  # ここに選手データのスプレッドシートIDを入力
-PLAYER_WORKSHEET_NAME = "シート1"  # シート名を適宜変更してください
+# スプレッドシートIDをSecretsから取得（選手データ用）
+if hasattr(st, 'secrets') and "spreadsheet_ids" in st.secrets:
+    PLAYER_DATA_SPREADSHEET_ID = st.secrets["spreadsheet_ids"].get("player_data", "")
+else:
+    # ローカル開発時は空文字（画面で入力可能）
+    PLAYER_DATA_SPREADSHEET_ID = ""
+
+# シート名
+PLAYER_LIST_WORKSHEET_NAME = "選手一覧シート"  # 選手一覧のシート名
+RECORD_LIST_WORKSHEET_NAME = "戦績一覧"  # 戦績一覧のシート名
+
+# 列名の定義
+PLAYER_COLUMNS = ["選手名", "所属チーム", "通称"]
+RECORD_COLUMNS = ["選手名", "大会名", "使用デッキ", "戦績", "メモ"]
 
 # --- Google Sheets 連携 ---
 SCOPES = [
@@ -50,8 +60,8 @@ def get_gspread_client():
         return None
 
 @st.cache_data(ttl=300)  # 5分間キャッシュ
-def load_player_data(spreadsheet_id, worksheet_name):
-    """選手データを読み込み"""
+def load_data_from_sheet(spreadsheet_id, worksheet_name, expected_columns=None):
+    """スプレッドシートからデータを読み込み"""
     if not spreadsheet_id:
         return pd.DataFrame()
     
@@ -71,6 +81,13 @@ def load_player_data(spreadsheet_id, worksheet_name):
         # 空の列を削除
         df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
         
+        # 列名を確認・調整
+        if expected_columns and not df.empty:
+            # 既存の列名と期待する列名が異なる場合、列数が一致すれば名前を変更
+            if list(df.columns)[:len(expected_columns)] != expected_columns:
+                if len(df.columns) >= len(expected_columns):
+                    df.columns = expected_columns + list(df.columns[len(expected_columns):])
+        
         return df
     except Exception as e:
         st.error(f"データの読み込みに失敗しました: {e}")
@@ -81,55 +98,107 @@ def main():
     st.title("🔍 選手データ検索")
     
     # スプレッドシートIDの設定チェック
-    if not PLAYER_SPREADSHEET_ID:
+    if not PLAYER_DATA_SPREADSHEET_ID:
         st.warning("⚠️ スプレッドシートIDが設定されていません。")
         st.info("""
         **設定方法:**
-        1. このファイル（`pages/01_選手データ検索.py`）を開く
-        2. `PLAYER_SPREADSHEET_ID` に選手データのスプレッドシートIDを設定
-        3. 必要に応じて `PLAYER_WORKSHEET_NAME` も変更
+        1. Streamlit CloudのSecretsに `spreadsheet_ids.player_data` を設定
+        2. または、このファイル（`pages/01_選手データ検索.py`）を開いて直接IDを設定
         
         **スプレッドシートIDの取得方法:**
         - Google SheetsのURL: `https://docs.google.com/spreadsheets/d/【ここがID】/edit`
+        
+        **このスプレッドシート内に以下の2つのシートが必要です:**
+        - `選手一覧シート`: 選手名、所属チーム、通称
+        - `戦績一覧`: 選手名、大会名、使用デッキ、戦績、メモ
         """)
         
         # テスト用のスプレッドシートID入力
         with st.expander("一時的にスプレッドシートIDを入力"):
-            temp_id = st.text_input("スプレッドシートID", key="temp_spreadsheet_id")
-            temp_sheet = st.text_input("シート名", value="シート1", key="temp_sheet_name")
+            temp_spreadsheet_id = st.text_input("スプレッドシートID", key="temp_spreadsheet_id")
+            temp_player_sheet = st.text_input("選手一覧 シート名", value="選手一覧シート", key="temp_player_sheet")
+            temp_record_sheet = st.text_input("戦績一覧 シート名", value="戦績一覧", key="temp_record_sheet")
+            
             if st.button("読み込み"):
-                if temp_id:
-                    st.session_state['temp_spreadsheet_id'] = temp_id
-                    st.session_state['temp_worksheet_name'] = temp_sheet
+                if temp_spreadsheet_id:
+                    st.session_state['temp_spreadsheet_id'] = temp_spreadsheet_id
+                    st.session_state['temp_player_sheet'] = temp_player_sheet
+                    st.session_state['temp_record_sheet'] = temp_record_sheet
                     st.rerun()
         
         if 'temp_spreadsheet_id' in st.session_state:
             spreadsheet_id = st.session_state['temp_spreadsheet_id']
-            worksheet_name = st.session_state['temp_worksheet_name']
+            player_sheet = st.session_state['temp_player_sheet']
+            record_sheet = st.session_state['temp_record_sheet']
         else:
             return
     else:
-        spreadsheet_id = PLAYER_SPREADSHEET_ID
-        worksheet_name = PLAYER_WORKSHEET_NAME
+        spreadsheet_id = PLAYER_DATA_SPREADSHEET_ID
+        player_sheet = PLAYER_LIST_WORKSHEET_NAME
+        record_sheet = RECORD_LIST_WORKSHEET_NAME
     
-    # データ読み込み
+    # データ読み込み（同じスプレッドシートの別シート）
     with st.spinner("データを読み込み中..."):
-        df = load_player_data(spreadsheet_id, worksheet_name)
+        player_df = load_data_from_sheet(spreadsheet_id, player_sheet, PLAYER_COLUMNS)
+        record_df = load_data_from_sheet(spreadsheet_id, record_sheet, RECORD_COLUMNS)
     
-    if df.empty:
+    if player_df.empty and record_df.empty:
         st.warning("データがありません。スプレッドシートを確認してください。")
         return
     
-    st.success(f"✅ {len(df)} 件のデータを読み込みました")
+    # データの統合（選手情報と戦績を結合）
+    if not player_df.empty and not record_df.empty:
+        # 選手名で結合
+        merged_df = pd.merge(
+            record_df,
+            player_df,
+            on="選手名",
+            how="left"
+        )
+        st.success(f"✅ 選手: {len(player_df)} 件、戦績: {len(record_df)} 件のデータを読み込みました")
+    elif not player_df.empty:
+        merged_df = player_df
+        st.success(f"✅ 選手: {len(player_df)} 件のデータを読み込みました")
+    else:
+        merged_df = record_df
+        st.success(f"✅ 戦績: {len(record_df)} 件のデータを読み込みました")
+    
+    # タブで表示を切り替え
+    tab1, tab2, tab3 = st.tabs(["📋 統合データ", "👤 選手一覧", "🏆 戦績一覧"])
+    
+    with tab1:
+        st.subheader("統合データ（選手情報 + 戦績）")
+        display_and_filter_data(merged_df, "merged")
+    
+    with tab2:
+        st.subheader("選手一覧")
+        if not player_df.empty:
+            display_and_filter_data(player_df, "player")
+        else:
+            st.info("選手一覧データがありません")
+    
+    with tab3:
+        st.subheader("戦績一覧")
+        if not record_df.empty:
+            display_and_filter_data(record_df, "record")
+        else:
+            st.info("戦績データがありません")
+
+def display_and_filter_data(df, data_type):
+    """データを表示・フィルタリングする共通関数"""
+    if df.empty:
+        st.info("データがありません")
+        return
     
     # サイドバーでフィルタリングオプション
-    st.sidebar.header("検索オプション")
+    st.sidebar.header(f"検索オプション ({data_type})")
     
     # 検索方法の選択
     search_method = st.sidebar.radio(
         "検索方法",
         ["キーワード検索", "列ごとに絞り込み"],
-        help="全体を検索するか、特定の列で絞り込むかを選択"
+        help="全体を検索するか、特定の列で絞り込むかを選択",
+        key=f"search_method_{data_type}"
     )
     
     filtered_df = df.copy()
@@ -138,8 +207,9 @@ def main():
         # キーワード検索
         search_term = st.sidebar.text_input(
             "🔎 検索キーワード",
-            placeholder="選手名、チーム、ポジションなど",
-            help="すべての列を対象に検索します"
+            placeholder="選手名、チーム、大会名など",
+            help="すべての列を対象に検索します",
+            key=f"search_{data_type}"
         )
         
         if search_term:
@@ -161,13 +231,13 @@ def main():
                     f"{col}",
                     options=sorted(unique_values.astype(str)),
                     default=None,
-                    key=f"filter_{col}"
+                    key=f"filter_{col}_{data_type}"
                 )
                 if selected_values:
                     filtered_df = filtered_df[filtered_df[col].astype(str).isin(selected_values)]
     
     # 結果表示
-    st.subheader(f"検索結果: {len(filtered_df)} 件")
+    st.write(f"**検索結果: {len(filtered_df)} 件**")
     
     if not filtered_df.empty:
         # 表示する列を選択
@@ -177,14 +247,15 @@ def main():
                 "表示する列を選択",
                 options=list(df.columns),
                 default=list(df.columns),
-                key="display_columns"
+                key=f"display_columns_{data_type}"
             )
         with col2:
             st.write("")  # スペーサー
             st.write("")  # スペーサー
-            if st.button("🔄 リセット", use_container_width=True):
+            if st.button("🔄 リセット", use_container_width=True, key=f"reset_{data_type}"):
                 st.cache_data.clear()
-                for key in list(st.session_state.keys()):
+                keys_to_delete = [k for k in st.session_state.keys() if data_type in k]
+                for key in keys_to_delete:
                     del st.session_state[key]
                 st.rerun()
         
@@ -193,7 +264,7 @@ def main():
             st.dataframe(
                 filtered_df[display_columns],
                 use_container_width=True,
-                height=600
+                height=500
             )
             
             # CSVダウンロード
@@ -201,14 +272,28 @@ def main():
             st.download_button(
                 label="📥 CSV形式でダウンロード",
                 data=csv,
-                file_name=f"player_data_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
+                file_name=f"{data_type}_data_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                key=f"download_{data_type}"
             )
             
             # 統計情報
             with st.expander("📊 統計情報"):
                 st.write("#### データの概要")
-                st.write(filtered_df[display_columns].describe())
+                # 数値列のみ統計を表示
+                numeric_cols = filtered_df[display_columns].select_dtypes(include=['number']).columns
+                if len(numeric_cols) > 0:
+                    st.write(filtered_df[display_columns].describe())
+                else:
+                    st.info("数値列がないため統計情報はありません")
+                
+                # 各列のユニーク値数
+                st.write("#### 各列のユニーク値数")
+                unique_counts = pd.DataFrame({
+                    '列名': display_columns,
+                    'ユニーク値数': [filtered_df[col].nunique() for col in display_columns]
+                })
+                st.dataframe(unique_counts, use_container_width=True)
         else:
             st.warning("表示する列を少なくとも1つ選択してください。")
     else:

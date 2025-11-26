@@ -12,7 +12,13 @@ st.set_page_config(layout="wide")
 
 # --- 定数定義 ---
 SPREADSHEET_NAME_DISPLAY = "Waic-戦績"
-SPREADSHEET_ID = "1V9guZQbpV8UDU_W2pC1WBsE1hOHqIO4yTsG8oGzaPQU" # ユーザー提供のID。実際のIDに置き換えてください。
+# スプレッドシートIDをSecretsから取得（ローカル開発時のフォールバック付き）
+if hasattr(st, 'secrets') and "spreadsheet_ids" in st.secrets and "war_record" in st.secrets["spreadsheet_ids"]:
+    SPREADSHEET_ID = st.secrets["spreadsheet_ids"]["war_record"]
+else:
+    # ローカル開発時のデフォルト値
+    SPREADSHEET_ID = "1V9guZQbpV8UDU_W2pC1WBsE1hOHqIO4yTsG8oGzaPQU"
+    st.warning("⚠️ スプレッドシートIDがSecretsに設定されていません。デフォルト値を使用します。")
 WORKSHEET_NAME = "シート1"
 COLUMNS = [ 'season', 'date', 'environment', 
 'my_deck', 'my_deck_type', 'opponent_deck', 'opponent_deck_type', 'first_second', 'result', 'finish_turn', 'memo' ]
