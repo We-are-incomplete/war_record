@@ -16,7 +16,7 @@ else:
     PLAYER_DATA_SPREADSHEET_ID = ""
 
 # シート名
-PLAYER_LIST_WORKSHEET_NAME = "選手一覧シート"  # 選手一覧のシート名
+PLAYER_LIST_WORKSHEET_NAME = "選手一覧"  # 選手一覧のシート名
 RECORD_LIST_WORKSHEET_NAME = "戦績一覧"  # 戦績一覧のシート名
 
 # 列名の定義
@@ -75,6 +75,9 @@ def load_data_from_sheet(spreadsheet_id, worksheet_name, expected_columns=None):
         worksheet = spreadsheet.worksheet(worksheet_name)
         df = get_as_dataframe(worksheet, evaluate_formulas=False, header=0, na_filter=True)
         
+        # デバッグ情報
+        st.info(f"シート「{worksheet_name}」から {len(df)} 行読み込みました。列: {list(df.columns)}")
+        
         # 空の行を削除
         df = df.dropna(how='all')
         
@@ -86,11 +89,14 @@ def load_data_from_sheet(spreadsheet_id, worksheet_name, expected_columns=None):
             # 既存の列名と期待する列名が異なる場合、列数が一致すれば名前を変更
             if list(df.columns)[:len(expected_columns)] != expected_columns:
                 if len(df.columns) >= len(expected_columns):
+                    st.warning(f"列名が一致しないため、自動的に変更します: {list(df.columns)[:len(expected_columns)]} → {expected_columns}")
                     df.columns = expected_columns + list(df.columns[len(expected_columns):])
         
         return df
     except Exception as e:
-        st.error(f"データの読み込みに失敗しました: {e}")
+        st.error(f"シート「{worksheet_name}」のデータ読み込みに失敗しました: {e}")
+        import traceback
+        st.error(f"詳細: {traceback.format_exc()}")
         return pd.DataFrame()
 
 # --- メイン画面 ---
@@ -109,14 +115,14 @@ def main():
         - Google SheetsのURL: `https://docs.google.com/spreadsheets/d/【ここがID】/edit`
         
         **このスプレッドシート内に以下の2つのシートが必要です:**
-        - `選手一覧シート`: 選手名、TwitterID、所属チーム、通称
+        - `選手一覧`: 選手名、TwitterID、所属チーム、通称
         - `戦績一覧`: 選手名、大会名、使用デッキ、戦績、メモ
         """)
         
         # テスト用のスプレッドシートID入力
         with st.expander("一時的にスプレッドシートIDを入力"):
             temp_spreadsheet_id = st.text_input("スプレッドシートID", key="temp_spreadsheet_id")
-            temp_player_sheet = st.text_input("選手一覧 シート名", value="選手一覧シート", key="temp_player_sheet")
+            temp_player_sheet = st.text_input("選手一覧 シート名", value="選手一覧", key="temp_player_sheet")
             temp_record_sheet = st.text_input("戦績一覧 シート名", value="戦績一覧", key="temp_record_sheet")
             
             if st.button("読み込み"):
