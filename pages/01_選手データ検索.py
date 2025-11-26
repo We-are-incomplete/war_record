@@ -20,7 +20,7 @@ PLAYER_LIST_WORKSHEET_NAME = "選手一覧シート"  # 選手一覧のシート
 RECORD_LIST_WORKSHEET_NAME = "戦績一覧"  # 戦績一覧のシート名
 
 # 列名の定義
-PLAYER_COLUMNS = ["選手名", "所属チーム", "通称"]
+PLAYER_COLUMNS = ["選手名", "TwitterID", "所属チーム", "通称"]
 RECORD_COLUMNS = ["選手名", "大会名", "使用デッキ", "戦績", "メモ"]
 
 # --- Google Sheets 連携 ---
@@ -109,7 +109,7 @@ def main():
         - Google SheetsのURL: `https://docs.google.com/spreadsheets/d/【ここがID】/edit`
         
         **このスプレッドシート内に以下の2つのシートが必要です:**
-        - `選手一覧シート`: 選手名、所属チーム、通称
+        - `選手一覧シート`: 選手名、TwitterID、所属チーム、通称
         - `戦績一覧`: 選手名、大会名、使用デッキ、戦績、メモ
         """)
         
@@ -260,11 +260,32 @@ def display_and_filter_data(df, data_type):
                 st.rerun()
         
         if display_columns:
+            # TwitterIDがある場合はリンク化したデータフレームを作成
+            display_df = filtered_df[display_columns].copy()
+            if 'TwitterID' in display_df.columns:
+                # TwitterIDをリンク形式に変換
+                def make_twitter_link(twitter_id):
+                    if pd.isna(twitter_id) or str(twitter_id).strip() == "":
+                        return ""
+                    twitter_id = str(twitter_id).strip()
+                    # @を除去（もしあれば）
+                    twitter_id = twitter_id.lstrip('@')
+                    return f"https://twitter.com/{twitter_id}"
+                
+                display_df['TwitterID'] = display_df['TwitterID'].apply(make_twitter_link)
+            
             # データフレームを表示
             st.dataframe(
-                filtered_df[display_columns],
+                display_df,
                 use_container_width=True,
-                height=500
+                height=500,
+                column_config={
+                    "TwitterID": st.column_config.LinkColumn(
+                        "TwitterID",
+                        help="クリックでTwitterプロフィールに遷移",
+                        display_text="🐦 Twitter"
+                    )
+                } if 'TwitterID' in display_columns else None
             )
             
             # CSVダウンロード

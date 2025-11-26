@@ -58,7 +58,7 @@ Google Cloud Platformのサービスアカウント情報です。
   - 列: season, date, environment, my_deck, my_deck_type, opponent_deck, opponent_deck_type, first_second, result, finish_turn, memo
 - **player_data**: 選手データ用のスプレッドシート（同じスプレッドシート内に2つのシート）
   - シート1「選手一覧シート」
-    - 列: 選手名, 所属チーム, 通称
+    - 列: 選手名, TwitterID, 所属チーム, 通称
   - シート2「戦績一覧」
     - 列: 選手名, 大会名, 使用デッキ, 戦績, メモ
 
