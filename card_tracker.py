@@ -600,6 +600,11 @@ def main():
         st.stop()
     # --- ▲▲▲ 認証処理の変更ここまで ▲▲▲ ---
 
+    # Cookieの初期化（認証後に実行）
+    if not cookies.ready():
+        st.warning("⏳ Cookieを初期化中...")
+        st.stop()
+
     df = load_data(SPREADSHEET_ID, WORKSHEET_NAME)
 
     # --- on_change コールバック関数の定義 (main関数内に移動) ---
@@ -624,6 +629,34 @@ def main():
         if 'inp_opponent_deck_type' in st.session_state: st.session_state.inp_opponent_deck_type = NEW_ENTRY_LABEL
         if 'inp_opponent_deck_type_new' in st.session_state: st.session_state.inp_opponent_deck_type_new = ""
     # --- コールバック定義ここまで ---
+
+    # Cookieから前回の入力値を復元（session_stateにまだ値がない場合のみ）
+    def restore_from_cookie():
+        """Cookieに保存された入力値をsession_stateに復元"""
+        cookie_keys = [
+            'inp_season_select', 'inp_season_new', 'inp_environment_select', 'inp_environment_new',
+            'inp_my_deck', 'inp_my_deck_new', 'inp_my_deck_type', 'inp_my_deck_type_new',
+            'inp_opponent_deck', 'inp_opponent_deck_new', 'inp_opponent_deck_type', 'inp_opponent_deck_type_new',
+            'inp_first_second', 'inp_result', 'inp_finish_turn'
+        ]
+        
+        for key in cookie_keys:
+            # session_stateにまだ値がなく、Cookieに値がある場合に復元
+            if key not in st.session_state and key in cookies:
+                cookie_value = cookies[key]
+                # 空文字列やNoneは復元しない
+                if cookie_value and cookie_value != '' and cookie_value != 'None':
+                    # 数値型の変換
+                    if key == 'inp_finish_turn':
+                        try:
+                            st.session_state[key] = int(cookie_value)
+                        except (ValueError, TypeError):
+                            pass
+                    else:
+                        st.session_state[key] = cookie_value
+    
+    # 初回アクセス時にCookieから復元
+    restore_from_cookie()
 
     with st.expander("戦績を入力する", expanded=True):
         st.subheader("対戦情報")
@@ -740,15 +773,35 @@ def main():
                 }
                 new_df_row = pd.DataFrame([new_record_data], columns=COLUMNS)
                 if save_data(new_df_row, SPREADSHEET_ID, WORKSHEET_NAME):
-                    success_placeholder.success("戦績を記録しました！")
-                    # セッション状態の直接操作を避け、特定のキーのみクリア
-                    keys_to_clear = [
-                        'inp_memo',  # メモフィールドのみクリア
-                        # 他のフィールドは保持してユーザビリティを向上
-                    ]
-                    for key in keys_to_clear:
-                        if key in st.session_state:
-                            del st.session_state[key]
+                    success_placeholder.success("戦績を記録しました！次回も同じ内容が入力されます（メモのみクリア）")
+                    
+                    # 前回の入力値をCookieに保存（メモ以外・タブを閉じても保持）
+                    cookie_data = {
+                        'inp_season_select': st.session_state.get('inp_season_select', ''),
+                        'inp_season_new': st.session_state.get('inp_season_new', ''),
+                        'inp_environment_select': st.session_state.get('inp_environment_select', ''),
+                        'inp_environment_new': st.session_state.get('inp_environment_new', ''),
+                        'inp_my_deck': st.session_state.get('inp_my_deck', ''),
+                        'inp_my_deck_new': st.session_state.get('inp_my_deck_new', ''),
+                        'inp_my_deck_type': st.session_state.get('inp_my_deck_type', ''),
+                        'inp_my_deck_type_new': st.session_state.get('inp_my_deck_type_new', ''),
+                        'inp_opponent_deck': st.session_state.get('inp_opponent_deck', ''),
+                        'inp_opponent_deck_new': st.session_state.get('inp_opponent_deck_new', ''),
+                        'inp_opponent_deck_type': st.session_state.get('inp_opponent_deck_type', ''),
+                        'inp_opponent_deck_type_new': st.session_state.get('inp_opponent_deck_type_new', ''),
+                        'inp_first_second': st.session_state.get('inp_first_second', '先攻'),
+                        'inp_result': st.session_state.get('inp_result', '勝ち'),
+                        'inp_finish_turn': str(st.session_state.get('inp_finish_turn', 3)),
+                    }
+                    
+                    # Cookieに保存
+                    for key, value in cookie_data.items():
+                        cookies[key] = str(value) if value is not None else ''
+                    cookies.save()
+                    
+                    # メモのみクリア
+                    if 'inp_memo' in st.session_state:
+                        del st.session_state['inp_memo']
                     
                     st.rerun()
                 else:
